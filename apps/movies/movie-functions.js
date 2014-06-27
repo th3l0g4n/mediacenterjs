@@ -23,15 +23,12 @@ var fs = require('fs.extra')
     , metafetcher = require('../../lib/utils/metadata-fetcher')
     , config = require('../../lib/handlers/configuration-handler').getConfiguration();
 
-    var database = require('../../lib/utils/database-connection');
-    var db = database.db;
-
+var database = require('../../lib/utils/database-connection');
+var db = database.openDatabase('movies');
 
 exports.loadItems = function (req, res, serveToFrontEnd){
     var metaType = "movie";
     var getNewFiles = true;
-    db.query("CREATE TABLE IF NOT EXISTS movies (original_name TEXT PRIMARY KEY, title TEXT, poster_path VARCHAR, backdrop_path VARCHAR, imdb_id INTEGER, rating VARCHAR, certification VARCHAR, genre VARCHAR, runtime VARCHAR, overview TEXT, cd_number TEXT, adult TEXT)");
-
 
     if(serveToFrontEnd === false){
         fetchMovieData(req, res, metaType, serveToFrontEnd);
@@ -46,45 +43,32 @@ exports.loadItems = function (req, res, serveToFrontEnd){
 
 
 exports.backdrops = function (req, res){
-    db.query('SELECT * FROM movies ORDER BY title asc',{
-        original_name       : String,
-        title               : String,
-        poster_path         : String,
-        backdrop_path       : String,
-        imdb_id             : String,
-        rating              : String,
-        certification       : String,
-        genre               : String,
-        runtime             : String,
-        overview            : String,
-        cd_number           : String,
-        adult               : String
-    }, function(rows) {
-        if (rows !== null && rows !== undefined){
+    db.find({}).sort({ title: 1 }).exec(function (err, rows) {
+        if (!err && rows){
             var backdropArray = [];
             rows.forEach(function(item){
                var backdrop = item.backdrop_path;
                backdropArray.push(backdrop)
             });
             res.json(backdropArray);
+        } else {
+            console.log(err);
         }
     });
 };
 
 exports.edit = function(req, res, data){
-    db.query('UPDATE movies SET title=$newTitle,poster_path=$newPosterPath,backdrop_path=$newBackdropPath WHERE original_name=$currentMovie; ', {
-        newTitle            : data.newTitle,
-        newPosterPath       : data.newPosterPath,
-        newBackdropPath     : data.newBackdropPath,
-        currentMovie        : data.currentMovie
-    },
-    function (err, rows) {
-        if(err){
-            console.log('DB error', err);
-        } else {
-            res.json('done');
+    db.update(
+        { original_name: data.currentMovie },
+        { $set: { title: data.newTitle, poster_path: data.newPosterPath, backdrop_path: data.newBackdropPath } },
+        function (err, rows) {
+            if(err){
+                console.log('DB error', err);
+            } else {
+                res.json('done');
+            }
         }
-    });
+    );
 }
 
 
@@ -116,16 +100,13 @@ exports.playMovie = function (req, res, platform, movieTitle){
 
 
 exports.sendState = function (req, res){
-    db.query("CREATE TABLE IF NOT EXISTS progressionmarker (movietitle TEXT PRIMARY KEY, progression TEXT, transcodingstatus TEXT)");
+    var incommingData = req.body,
+        transcodingstatus = 'pending';
 
-    var incommingData   = req.body
-    , movieTitle        = incommingData.movieTitle
-    , progression       = incommingData.currentTime
-    , transcodingstatus = 'pending';
-
-    if(movieTitle !== undefined && progression !== undefined){
-        var progressionData = [movieTitle, progression, transcodingstatus];
-        db.query('INSERT OR REPLACE INTO progressionmarker VALUES(?,?,?)', progressionData);
+    if(incommingData.movieTitle && incommingData.progression){
+        db.update(
+            { title: incommingData.movieTitle },
+            { $set: { progression: incommingData.currentTime, transcodingStatus: transcodingstatus } });
     }
 
 }
@@ -146,29 +127,15 @@ fetchMovieData = function(req, res, metaType, serveToFrontEnd, getNewFiles) {
 
 getMovies = function(req, res, metaType, serveToFrontEnd,getNewFiles){
     console.log('Loading movie data...', serveToFrontEnd);
-    db.query('SELECT * FROM movies ORDER BY title asc',{
-        original_name       : String,
-        title               : String,
-        poster_path         : String,
-        backdrop_path       : String,
-        imdb_id             : String,
-        rating              : String,
-        certification       : String,
-        genre               : String,
-        runtime             : String,
-        overview            : String,
-        cd_number           : String,
-        adult               : String
-    },
-    function(err, rows) {
+    db.find({}).sort({ title: 1 }).exec(function (err, rows) {
+        console.log(rows);
         if(err){
-            db.query("CREATE TABLE IF NOT EXISTS movies (original_name TEXT PRIMARY KEY, title TEXT, poster_path VARCHAR, backdrop_path VARCHAR, imdb_id INTEGER, rating VARCHAR, certification VARCHAR, genre VARCHAR, runtime VARCHAR, overview TEXT, cd_number TEXT, adult TEXT)");
             console.log("DB error",err);
             serveToFrontEnd = true;
             if(getNewFiles === true){
                 fetchMovieData(req, res, metaType, serveToFrontEnd,getNewFiles);
             }
-        } else if (rows !== null && rows !== undefined && serveToFrontEnd !== false && rows.length > 0){
+        } else if (rows && serveToFrontEnd !== false && rows.length > 0){
             console.log('Sending data to client...');
             res.json(rows);
         } else {

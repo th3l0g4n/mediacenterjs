@@ -85,7 +85,6 @@ app.configure(function(){
 });
 
 
-
 /* CORS */
 app.all('*', function(req, res, next) {
   res.header("Access-Control-Allow-Origin", "*");
@@ -267,10 +266,9 @@ app.post('/clearCache', function(req, res){
             }
 
             var database = require('./lib/utils/database-connection');
-            var db = database.db;
-            db.query('DROP TABLE IF EXISTS ' + name);
-
-
+            var db = database.openDatabase(name, function (err, db) {
+                db.remove({}, { multi: true });
+            });
         });
     });
 
