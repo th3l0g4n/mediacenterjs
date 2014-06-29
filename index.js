@@ -267,12 +267,15 @@ app.post('/clearCache', function(req, res){
 
             var database = require('./lib/utils/database-connection');
             var db = database.openDatabase(name, function (err, db) {
-                db.remove({}, { multi: true });
+                if (err) console.log(err);
+                console.log("Removing " + name);
+                db.remove({}, { multi: true }, function (err) {
+                    if (err) console.log(err);
+                    return res.send('done');
+                });
             });
         });
     });
-
-    return res.send('done');
 });
 
 app.get('/checkForUpdate', function(req, res){

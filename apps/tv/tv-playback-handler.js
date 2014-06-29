@@ -1,6 +1,6 @@
 /*
 	MediaCenterJS - A NodeJS based mediacenter solution
-	
+
     Copyright (C) 2014 - Jan Smolders
 
     This program is free software: you can redistribute it and/or modify
@@ -21,13 +21,8 @@ var colors = require('colors')
     , fs = require('fs.extra')
     , config = require('../../lib/handlers/configuration-handler').getConfiguration();
 
-var dblite = require('dblite');
-if(os.platform() === 'win32'){
-    dblite.bin = "./bin/sqlite3/sqlite3";
-}
-var db = dblite('./lib/database/mcjs.sqlite');
-db.on('info', function (text) { console.log(text) });
-db.on('error', function (err) { console.error('Database error: ' + err) });
+var database = require('../../lib/utils/database-connection');
+var db = database.openDatabase("tvepisodes");
 
 /* Public Methods */
 
@@ -71,14 +66,14 @@ exports.startPlayback = function(response, episodeUrl, episode, subtitleUrl, sub
             } else {
                 var movieProgression = 0;
 
-                if( data.transcodingstatus === 'pending'){      
+                if( data.transcodingstatus === 'pending'){
                     fs.exists(outputPath, function(e,exists){
                         if(!e){
-                            
+
                             if(exists){
                                 fs.unlinkSync(outputPath);
                             }
-                            
+
                             if(fs.existsSync(episodeUrl)){
                                 startTranscoding(episodeUrl, episode, outputPath, ExecConfig);
                             } else{
@@ -128,26 +123,21 @@ GetDurarion = function(response, episodeUrl, episode, callback) {
 
 
 checkProgression = function(episode, callback) {
-    db.query('SELECT * FROM progressionmarker WHERE movietitle =? ', [ episode ], {
-            movietitle 		: String,
-            progression     : String
-        },
-        function(rows) {
-            if (typeof rows !== 'undefined' && rows.length > 0){
-                var data = {
-                    'progression':rows[0].progression,
-                    'transcodingstatus':rows[0].transcodingstatus
-                };
-                callback(data);
-            } else {
-                var data = {
-                    'progression':0,
-                    'transcodingstatus':'pending'
-                }
-                callback(data);
+    db.find({ title: episode }, function (err, rows) {
+        if (rows && rows.length > 0){
+            var data = {
+                'progression': rows[0].progression,
+                'transcodingstatus': rows[0].transcodingStatus
+            };
+            callback(data);
+        } else {
+            var data = {
+                'progression': 0,
+                'transcodingstatus': 'pending'
             }
+            callback(data);
         }
-    );
+    });
 }
 
 
@@ -159,9 +149,13 @@ startTranscoding = function( episodeUrl, episode, outputPath, ExecConfig){
                 if (err) {
                     console.log('FFMPEG error: ',err) ;
                 } else{
-                    console.log('Transcoding complete');
-
-                    db.query('UPDATE progressionmarker SET transcodingstatus = "done" WHERE movietitle =? ', [ episode ]);
+                    db.update({ title: episode }, { $set: { transcodingStatus: "done" } }, function (err) {
+                        if (err) {
+                            console.log('Transcoding failed!', err)
+                        } else {
+                            console.log('Transcoding complete');
+                        }
+                    });
                 }
             });
 
