@@ -23,11 +23,11 @@ tvApp.controller('tvCtrl', function($scope, $http, $modal,player){
     $scope.player = player;
     $scope.focused = 0;
     $scope.serverMessage = 0;
+    $scope.serverStatus= '';
+    
     $http.get('/tv/loadItems').success(function(data) {
         $scope.tvshows = data;
     });
-
-    $scope.orderProp = 'genre';
 
     $scope.playEpisode = function(data){
         $scope.playing = true;

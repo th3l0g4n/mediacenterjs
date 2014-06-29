@@ -21,12 +21,14 @@ var dblite = require('dblite'),
     fs = require('graceful-fs'),
     path = require('path'),
     os = require('os'),
-    file_utils = require('../file-utils'),
-    ajax_utils = require('../ajax-utils'),
-    app_cache_handler = require('../../handlers/app-cache-handler'),
-    configuration_handler = require('../../handlers/configuration-handler'),
+    file_utils = require('../../lib/utils/file-utils'),
+    ajax_utils = require('../../lib/utils/ajax-utils'),
+    app_cache_handler = require('../../lib/handlers/app-cache-handler'),
+    configuration_handler = require('../../lib/handlers/configuration-handler'),
     Trakt = require('trakt'),
-    tv_title_cleaner = require('../title-cleaner');
+    tv_title_cleaner = require('../../lib/utils/title-cleaner'),
+    socket = require('../../lib/utils/setup-socket'),
+    io = socket.io;
 
 var config = configuration_handler.initializeConfiguration();
 
@@ -82,45 +84,45 @@ var walk = function(dir, done) {
     });
 };
 
-var setupParse = function(results) {
-    if (!results) {
-        console.log('no results!');
-    }
+var setupParse = function(req, res, serveToFrontEnd, results) {
     if (results && results.length > 0) {
         var file = results.pop();
-        doParse(file, function() {
-            setupParse(results);
+        doParse(req, res, file, serveToFrontEnd, function() {
+            setupParse(req, res, serveToFrontEnd, results);
         });
+    }
+    if (!results) {
+        console.log('no results!');
     }
 };
 
 
-var doParse = function(file, callback) {
+var doParse = function(req, res, file, serveToFrontEnd, callback) {
     var originalTitle           = file.split('/').pop()
     , episodeInfo               = tv_title_cleaner.cleanupTitle(originalTitle)
     , episodeReturnedTitle      = episodeInfo.title
     , episodeStripped           = episodeReturnedTitle.replace(/.(avi|mkv|mpeg|mpg|mov|mp4|wmv)$/,"")
     , episodeTitle              = episodeStripped.trimRight();
 
-    loadEpisodeMetadataFromDatabase(episodeTitle, function(episodedata) {
-
-        if(episodedata !== null){
-            var showTitle = episodedata.episodeTitle;
-            loadShowMetadataFromDatabase(showTitle);
-        } else {
-            getDataForNewShow(originalTitle, episodeTitle);
-        }
-
+    getDataForNewShow(originalTitle, episodeTitle, function(){
         nrScanned++;
 
         var perc = parseInt((nrScanned / totalFiles) * 100);
         var increment = new Date(), difference = increment - start;
         if (perc > 0) {
             var total = (difference / perc) * 100, eta = total - difference;
-            //console.log('Item '+nrScanned+' from '+totalFiles+', '+perc+'% done \r');
-            console.log(perc);
+            io.sockets.emit('progress',{msg:perc});
+            console.log(perc+'% done.');
         }
 
+        if(nrScanned === totalFiles){
+            if(serveToFrontEnd === true){
+                io.sockets.emit('serverStatus',{msg:'Processing data...'});
+                getTvshows(req, res);
+            }
+        }
+
+        callback();
     });
 };
 
@@ -130,7 +132,7 @@ var doParse = function(file, callback) {
  * @param originalTitle      Original episode filename
  * @param episodeTitle       Cleaned up name of episode
  */
-getDataForNewShow = function(originalTitle, episodeTitle){
+getDataForNewShow = function(originalTitle, episodeTitle,callback){
 
     var episodeSeason       = ''
         , season            = ''
@@ -153,7 +155,7 @@ getDataForNewShow = function(originalTitle, episodeTitle){
     var episodeData = {
         "showTitle"         : showTitle.toLowerCase(),
         "episodeSeason"     : episodeSeason,
-        "episodeNumber"        : episodeNumber
+        "episodeNumber"     : episodeNumber
     }
 
     season          = episodeData.episodeSeason;
@@ -170,9 +172,9 @@ getDataForNewShow = function(originalTitle, episodeTitle){
         getMetadataForShow(trimmedTitle, function(newshowMetaData){
             var newTvshowTitle = newshowMetaData[0];
             // Store show data in db and do lookup again
-            storeShowMetadataInDatabase(newshowMetaData, function() {
-                loadShowMetadataFromDatabase(showTitle);
-            });
+            storeShowMetadataInDatabase(newshowMetaData);
+
+            callback();
         });
 
     });
@@ -214,44 +216,20 @@ getMetadataForShow = function(tvTitle, callback){
 
 
 
-loadEpisodeMetadataFromDatabase = function(tvTitle, callback) {
-    episodesDb.find({ localName: tvTitle }, function (err, rows) {
-        if (rows && rows.length > 0){
-            callback(rows);
-        } else {
-            callback(null);
-        }
-    });
 };
 
-loadShowMetadataFromDatabase = function(tvShowtitle) {
-    db.find({ title: tvShowtitle }, function (err, rows) {
-        if (rows && rows.length < 1){
-            getDataForNewShow(originalTitle, episodeTitle);
-        }
-    });
-
-    if(nrScanned === totalFiles){
-        var stop = new Date();
-        //console.log("Scan complete! Time taken:", UMS((stop - start) / 100, true));
-
-        process.exit();
-    }
-};
-
-
-storeShowMetadataInDatabase = function(metadata, callback) {
+storeShowMetadataInDatabase = function (metadata, callback) {
     db.update({ title: metadata.title }, metadata, { upsert: true }, function (err) {
         if (err) console.log(err);
         callback();
-    })
-};
+    });
+}
 
 storeEpisodeMetadataInDatabase = function(metadata, callback) {
     episodesDb.update({ title: metadata.title }, metadata, { upsert: true }, function (err) {
         if (err) console.log(err);
         callback();
-    })
+    });
 };
 
 getMetadataFromTrakt = function(tvShow, callback) {
@@ -293,31 +271,80 @@ downloadTvShowBanner = function(banner, tvShow, callback) {
 };
 
 
-walk(dir,  function(err, results) {
-    totalFiles = (results) ? results.length : 0;
-    //console.log("Starting scan for", totalFiles, "files");
-    setupParse(results);
-});
 
-var UMS = function(seconds, ignoreZero) {
-    var hours = parseInt(seconds / 3600), rest = parseInt(seconds % 3660), minutes = parseInt(rest / 60), seconds = parseInt(rest % 60);
-    if (hours < 10) {
-        hours = "0" + hours;
-    }
-    if (minutes < 10) {
-        minutes = "0" + minutes;
-    }
-    if (seconds < 10) {
-        seconds = "0" + seconds;
-    }
-    if (ignoreZero) {
-        if (hours == "00") {
-            hours = "";
-        } else {
-            hours = hours + ":";
+getTvshows  = function(req, res){
+    var itemsDone   = 0;
+    var ShowList    = [];
+
+    db.query('SELECT * FROM tvshows ORDER BY title asc',{
+        title             : String,
+        banner            : String,
+        genre             : String,
+        certification      : String
+    }, function(err, rows) {
+        if(err){
+            console.log("DB error",err);
+        } else if (rows !== null && rows !== undefined && rows.length > 0) {
+            var count = rows.length;
+            console.log('Found '+count+' shows, getting additional data...');
+
+            rows.forEach(function(item, value){
+                var showTitle       = item.title
+                , showBanner        = item.banner
+                , showGenre         = item.genre
+                , showCertification = item.certification;
+
+                getEpisodes(showTitle, showBanner, showGenre, showCertification, function(availableEpisodes){
+                    if(availableEpisodes !== 'none'){
+                        if(availableEpisodes !== null) {
+                            ShowList.push(availableEpisodes);
+                            itemsDone++;
+
+                            if (count === itemsDone) {
+                                res.json(ShowList);
+                                // db.close();
+                            }
+                        }
+                    } else {
+                        console.log('Error retrieving episodes');
+                    }
+                });
+            });
         }
-    } else {
-        hours = hours + ":";
-    }
-    return hours + minutes + ":" + seconds;
-};
+    });
+}
+
+getEpisodes = function(showTitle, showBanner, showGenre, showCertification, callback){
+    db.query('SELECT * FROM tvepisodes WHERE title = $title ORDER BY season asc', { title:showTitle }, {
+        localName   : String,
+        title       : String,
+        season      : Number,
+        episode     : Number
+    },
+    function(err, rows) {
+        if(err){
+            callback('none');
+        }
+        if (typeof rows !== 'undefined' && rows.length > 0){
+            var episodes = rows;
+            var availableEpisodes = {
+                "title"         : showTitle,
+                "banner"        : showBanner,
+                "genre"         : showGenre,
+                "certification" : showCertification,
+                "episodes"      : episodes
+            }
+            callback(availableEpisodes);
+        } else {
+            callback('none');
+        }
+    });
+}
+
+exports.loadData = function(req, res, serveToFrontEnd) {
+    console.log('Getting tv data');
+    walk(dir,  function(err, results) {
+        totalFiles = (results) ? results.length : 0;
+        setupParse(req, res, serveToFrontEnd, results);
+    });
+}
